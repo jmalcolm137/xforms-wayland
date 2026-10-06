@@ -1,0 +1,22 @@
+# xftest2.input — press "Hello world", then "Quit".
+#
+# Surface-relative coordinates (see xftest1.input): the form is 230x180, the
+# "Hello world" button is at (20,20) 190x60 and "Quit" at (70,100) 90x60, so
+# their centres are (115,50) and (115,130).
+#
+# Pressing the first button must print "Hello world" and leave the program
+# running; pressing "Quit" must end it.
+
+motion 115 50
+sleep 300
+button press left
+sleep 150
+button release left
+sleep 400
+
+motion 115 130
+sleep 200
+button press left
+sleep 150
+button release left
+sleep 800

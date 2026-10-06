@@ -1,0 +1,29 @@
+# xftest3.input — the callback example.
+#
+# "Hello world" carries a callback that prints "Hello world" and must NOT end the
+# program (fl_do_forms only returns for the button without a callback); "Quit"
+# ends the current fl_do_forms() call.  Geometry as in xftest2.input: the form is
+# 230x180, "Hello world" is at (20,20) 190x60 and "Quit" at (70,100) 90x60.
+#
+# The example on xforms-toolkit.org calls fl_do_forms() twice in a row, so
+# "Quit" has to be pressed once per call: the first press returns from the first
+# fl_do_forms(), the second press from the second one, and only then does main()
+# return.
+
+motion 115 50
+sleep 300
+button press left
+sleep 150
+button release left
+sleep 400
+
+motion 115 130
+sleep 200
+button press left
+sleep 150
+button release left
+sleep 500
+button press left
+sleep 150
+button release left
+sleep 800

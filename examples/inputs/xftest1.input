@@ -1,0 +1,21 @@
+# xftest1.input — click the only button, which makes the program exit.
+#
+# Coordinates are surface-relative, i.e. relative to the client's own surface.
+# The headless compositor implements no window placement: each toplevel surface
+# covers the canvas on its own, so the 230x100 form's surface is 230x100 and the
+# button at (20,20) 190x60 has its centre at (115,50).  (XForms asks for the
+# window to be centred on the pointer -- FL_PLACE_MOUSE -- which moves the *X*
+# window inside the synthetic root, but the pointer coordinates the compositor
+# sends are still surface-relative.)
+#
+# There is deliberately no trailing "screenshot": the compositor exits the
+# instant it takes one, closing the Wayland connection while the client may still
+# be processing the click, and the client would die of XIO rather than of its own
+# accord.  The script just ends, and the runner checks that the client exited 0.
+
+motion 115 50
+sleep 300
+button press left
+sleep 200
+button release left
+sleep 800

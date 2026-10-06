@@ -1,0 +1,17 @@
+# xlib-wayland is a separate upstream project: a working clone for building the
+# shim and its headless compositor, not part of this repository.
+/xlib-wayland/
+
+# meson/ninja build trees
+/build/
+build/
+
+# compiled examples
+/examples/xftest1
+/examples/xftest2
+/examples/xftest3
+
+# test artefacts
+frames/
+*.png.tmp
+*.log
