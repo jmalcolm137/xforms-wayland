@@ -231,6 +231,16 @@ XForms' `fl_do_forms()` does its own `select()` over `ConnectionNumber(fl_displa
 * `XPutImage`/`XGetImage` matter for two XForms features: `Xpm` pixmaps and
   `fl_get_snapshot`/screenshot-style reads. Both are pixel-exact paths already proven by the
   shim's own tests.
+* **HiDPI.** The shim gets the output's device scale from `wl_output.scale` (`MW_FORCE_SCALE`
+  overrides it for testing). It then reports the *logical* screen size to the client (`mode /
+  scale`, 1280×800 on this 2560×1600 @ scale-2 panel) and a flat 96 DPI, so the application lays
+  out exactly as it would on a 96-DPI display, while every surface it draws into is allocated at
+  `scale` times the logical size with the cairo device scale set (`mw_surface_create_scaled`, which
+  is `cairo_surface_set_device_scale` under the hood). Wire-level coordinates stay logical, so no
+  drawing code in the shim or the client changes; glyphs, lines and fills are simply rasterised at
+  physical resolution. Each toplevel attaches a physical buffer and announces it with
+  `wl_surface.set_buffer_scale`, so the compositor presents it 1:1 instead of stretching a 1x
+  buffer. Without this the window is the right size but visibly soft on a HiDPI panel.
 
 ### 3.6 Resource management
 
@@ -348,11 +358,53 @@ cover distinct subsystems rather than object variety:
 | `xfd`, `fdesign` | the two big applications: palettes, colour pickers, dialogs, timers |
 
 `scripts/run-xforms-demos.sh` walks 86 of them (every demo except the GL ones and
-`itest`, which is an interactive test harness rather than a demo). The first run
-against the shim: **71 paint, 15 show no window, 0 crashes, 0 missing symbols.**
+`itest`, which is an interactive test harness rather than a demo).
+
+First run against the shim: **71 paint, 15 show no window, 0 crashes, 0 missing symbols.**
+The 15 were all one bug — every one of them opens its form with `FL_NOBORDER`, i.e. override-redirect
+(§7). After the fix: **85 paint, 1 (`demo27`, a legitimately empty canvas), 0 crashes, 0 gaps.**
 
 Excluded, with reasons: `gl*` (GLX, §1.2), `jpeg`-dependent image demo (needs an extra
 dependency; covered by `xpm*` instead), anything under `contrib/` that needs X11-only tools.
+
+#### 5.2.1 Appearance: diffing against real X11
+
+Upstream ships no reference screenshots (only `x1.png`/`x2.png`, which are WM-decorated windows), so
+"does it look right" has no oracle in the XForms tree. The substitute is a second, independent
+implementation of the thing being emulated: **the same binary, from the same build tree, run against
+the system `libX11` on the XWayland display.** `libforms.so` has the shim directory in its RUNPATH,
+and RUNPATH is searched *after* `LD_LIBRARY_PATH`, so pointing `LD_LIBRARY_PATH` at the system
+`libX11.so.6` selects the reference implementation. The window is found by diffing `xdotool`'s window
+list across the launch (with an empty `--name` regex — a `.` pattern misses the demos that pass a NULL
+title to `fl_show_form`) and captured by id, which takes the client area without the compositor's
+decorations.
+
+Comparison is cell-level ink, not pixel equality: text is rasterised by two different font stacks
+(core X fonts vs Xft), so an exact diff reports every label as different and says nothing. Both frames
+are reduced to a grid (8 px cells) and each cell to one bit — does it contain ink differing from the
+frame's background colour by more than 24? That measures *layout*, which is the thing under test.
+
+Current result over the 30 scored demos: **19 pixel-identical, 10 `close` (glyph rasterisation only),
+1 excluded as non-reproducible, 0 differences.** Window geometry matches to the pixel on every one,
+including the odd ones — `buttonall`'s 290×260, `objinactive`'s 420×230 with a NULL title, `demo05`'s
+240×400. The `close` cases are the ~2 px label baseline of §7.
+
+#### 5.2.2 HiDPI
+
+The whole matrix is run a second time with `HC_SCALE=2`, which makes the test compositor advertise
+`wl_output.scale = 2` exactly as the real panel does. The runner keeps the *logical* canvas at
+800×600 (passing `--size 1600x1200`) and makes the output twice as large physically: shrinking the
+logical screen instead would trip the full-screen-root-cover heuristic in `mw_map_window()` and drop
+legitimate large borderless forms, so it would measure the harness rather than the shim.
+
+Result: **the same 85 of 86 paint, with identical classification to scale 1, and every frame is
+exactly 2× the scale-1 frame** (`buttonall` 290×260 → 580×520, `objinactive` 420×230 → 840×460,
+`demo05` 240×400 → 480×800). Downscaling a scale-2 frame back to logical size matches the scale-1
+frame to a mean absolute difference of 1–3 of 255 — the layout is unchanged — while the raw scale-2
+frame is measurably sharper than a 2× nearest upscale of the scale-1 render. `run-xforms-examples.sh
+HC_SCALE=2` confirms the scripted coordinates still land on the right widgets, including the
+popup-relative release in `xftest4`: the compositor delivers surface-local (logical) coordinates, so
+input mapping is unaffected by the buffer scale.
 
 ### 5.3 How each program is judged
 
@@ -368,8 +420,10 @@ PNG frame capture:
 
 Beyond "did it paint", the runner asserts behaviour, not just pixels:
 
-* `xftest1/2/3` must render a window containing the button label(s); a synthetic click at the
-  button centre must make the program exit (`xftest3` must not).
+* `xftest1/2/3/4` must render a window containing the button label(s); a synthetic click at the
+  button centre must make the program exit (`xftest3` must not). `xftest4` is the borderless form +
+  pulldown menu case (§5.1): the click opens the menu and the release is popup-relative, and the
+  program must print `QUIT File` and exit 0.
 * Menu demos must open a popup on press and highlight/select an item.
 * `xdpyinfo`-style introspection is unnecessary (XForms itself prints `xdpyinfo`-equivalent info
   via `fl_initiali[z]e -v`); instead we check XForms' own diagnostics
@@ -421,11 +475,26 @@ using `tests/*.input` in xlib-wayland as the model.
 To be filled in as the matrix runs. Each entry is either "fixed in xlib-wayland (pushed)" or
 "upstream XForms issue, not our bug".
 
+One methodological note, because it decided several rows above. A pixel diff against real X11 is
+only evidence of a defect if **X11 agrees with itself**: `free1` installs a 64-entry greyscale ramp
+with `fl_mapcolor()` and paints its free object with whatever XForms' installed-colormap search
+resolves, which drifted across four consecutive X11 runs (191, 195, 195, 195 — and 203 with an
+explicit `-depth 24`). So `scripts/run-xforms-crosscheck.sh` takes *three* X11 reference frames and
+compares them to each other before believing a shim-vs-X11 difference; a demo that fails that is
+reported `varies`, not `diff`.
+
 | Gap | Symptom | Disposition |
 |---|---|---|
 | Duplicate tentative definitions in `fdesign` (`curobj` in `sp_twheel.c` and `sp_spinner.c`) | link fails: *multiple definition of `curobj`* under GCC ≥ 10's default `-fno-common` | handled by the `-fcommon` build flag (§4); no source change — a host-compiler accommodation, not a shim issue |
 | **Input scripts started before the client had a window** | `tools/headless-compositor.c` began the `--input` script on a fixed 400 ms timer. XForms needs longer than that to map anything (Xrm, font list, colormap), so every action was delivered to no surface and dropped: buttons appeared completely dead. | **fixed in xlib-wayland** (commit `2852984`): the script now waits until a toplevel or popup is mapped, polls every 50 ms, gives up after 3 s, and is kicked by the first surface commit. Verified by `xftest1/2/3` exiting 0 on a scripted click |
-| 15 demos paint nothing inside the harness window (`demo05`, `demo06`, `demo27`, `demo33`, `free1`, `multilabel`, `objinactive`, `positioner`, `pushbutton`, `pushme`, `sld_alt`, `sldinactive`, `sld_radio`, `sldsize`, `touchbutton`) | headless frame is blank | not a defect: every one of them starts, stays up and exits cleanly on the live session. Some read stdin before showing a form (`free1`, `demo27` …) and others ask for a window larger than the 800×600 canvas the harness configures. Classified `ran` by the runner rather than silently counted as passing |
+| **15 demos mapped no window at all** (`demo05`, `demo06`, `demo27`, `demo33`, `free1`, `multilabel`, `objinactive`, `positioner`, `pushbutton`, `pushme`, `sld_alt`, `sldinactive`, `sld_radio`, `sldsize`, `touchbutton`) | client ran, exited cleanly, blank frame; `MW_TRACE` showed `XMapWindow … override=1` with no `wl_surface` | **real shim bug, fixed.** All 15 call `fl_show_form(…, FL_NOBORDER, …)`, and XForms answers that with `override_redirect = True` on the form's window (`lib/win.c:644`, guarded by `pos_request`). `mw_map_window()` only turned override-redirect windows into surfaces if `mw_popup_anchor()` found a non-override-redirect toplevel — but for a borderless form there is none, the form *is* the client's only window, so it was dropped. Fix: an override-redirect **root child** with no anchor is promoted to an undecorated `xdg_toplevel` (and becomes `active_toplevel` + focused); and `mw_popup_anchor()` now accepts an override-redirect window that is a non-popup toplevel, so a borderless app can still anchor its menus. Matrix went 71 → **85 of 86 demos painting** |
+| `demo27` paints a single flat colour | frame is 400×400, one colour | **not a defect.** Its `main_win` is a canvas whose object count starts at 0, so empty-until-clicked is correct. Driving 3 clicks at (100,100), (200,150), (300,250) yields exactly 4800 non-background pixels — 3 × a 40×40 square (`cursize = 20`) in (128,128,128), the default `r/g/b` — bbox (80,80)–(319,269), exactly as declared. The runner's "more than one colour" rule cannot express this |
+| No depth-32 TrueColor visual | `fl_get_visual_depth()` returns 24; XWayland returns 32, and `fl_get_flcolor(FL_COL1)` is `0x00ADADAD` vs `0xFFADADAD` | **deliberate.** The shim has one 32bpp pipeline end to end — `buf_alloc()` sets `stride = w*4` and wraps that same mmap as the `CAIRO_FORMAT_ARGB32` surface cairo draws into, then hands it to `wl_shm` as `ARGB8888` — and advertises it as `depth 24, bpp 32`, which is exactly Xorg's encoding for a 24-bit visual with a 4-byte framebuffer. Advertising 32 would claim a *compositing* visual, and the shim would over-promise: `mw_set_source_argb()` coerces alpha 0 to opaque, so a client that saw 32 and asked for a transparent colour would get an opaque one. This is a capability difference (one non-compositing visual vs an extra compositing one), not a bit-depth bug |
+| Label baseline sits ~2 px higher than X11 | text ink lands in the 8 px cell above where X11 puts it; every widget border, plot curve and box is pixel-identical | **deliberate.** XForms draws through Xft/harfbuzz, X11 through core X fonts; the ascent/descent the two report for a 14 px Helvetica differ. `DESIGN.md` §1.2 lists exact core-font metrics as a non-goal. Worth revisiting only if it ever moves a label out of its box |
+| **HiDPI output was soft** | on the real 2560×1600 @ scale-2 panel the shim reported a 1280×800 screen but rendered 1× buffers, so the compositor stretched them: the window was the right size but text and lines were visibly blurry | **fixed in xlib-wayland.** The output scale comes from `wl_output.scale` (`MW_FORCE_SCALE` overrides it for tests). Window surfaces and shm buffers are allocated at `w*scale` with `cairo_surface_set_device_scale`, and each toplevel attaches its physical buffer with `wl_surface.set_buffer_scale`. All coordinates stay logical, so no drawing or input code changed. Validated by the whole 86-demo matrix at `HC_SCALE=2` (same 85/86 classification, every frame exactly 2× its scale-1 size) and by `run-xforms-examples.sh HC_SCALE=2` (§5.2.2) |
+| Logical DPI stays a flat 96 on a HiDPI output | `Screen` mm is derived from the logical size and `MW_DEFAULT_DPI` (1280×800 → 338×211 mm) while `XRRGetMonitors` reports the true physical mm (286×179, ~227 DPI): two different answers in one process, and a 12 pt request is physically ~10 pt on the panel | **deliberate for now.** Predates the scaling work and is the usual HiDPI trade-off (cf. a compositing session's text-scaling factor). Reporting the true logical DPI (~114) would resize every font and invalidate the cross-check corpus, so it is left as a separate decision |
+| Pixmaps and `XPutImage` images are logical-resolution | a client pixmap copied into a scaled window is upscaled, so content drawn into a pixmap rather than straight into a window is softer | **deliberate simplification.** Text and widget drawing go directly to window surfaces and are crisp; only pixmap-borne content is resampled. Making pixmaps physical needs scale-aware `XGetImage`/`XPutImage` on client-visible images — a larger change with no visible benefit for the demos |
+| `run-xforms-examples.sh` is timing-flaky | ~1 in 5 runs, the first scripted click is consumed by XForms before it has finished initialising, so the callback never fires and the run reports `stdout missing /Hello world/`; it hits a different example each time | **pre-existing, not a shim defect.** Reproduces against the parent revision (interleaved `xftest1` 3/6 vs 4/6), and a failing trace shows byte-identical event delivery to a passing one (2× ButtonPress, 2× ButtonRelease, 2× MotionNotify) — the client consumes the events but does not act on them. `xftest4` is stable across every run. Left as a harness issue; the compositor's 3 s "wait for a surface" backstop is the likely place to harden it |
 | `buttonall` warns it cannot read `crab45.xpm` when run from `demos/.libs` | data-file lookup is relative to the cwd | run the demos from `demos/` (the runner does); the warning disappears |
 
 ---
@@ -438,8 +507,9 @@ To be filled in as the matrix runs. Each entry is either "fixed in xlib-wayland 
 | M1 | `configure` + `make` + `make install` unmodified against the shim | ✅ done (`--enable-demos --disable-gl`, `-fcommon`) |
 | M2 | `xftest1/2/3` from examples.html render under the headless compositor | ✅ done |
 | M3 | Scripted clicks handled: buttons activate, callbacks fire, programs exit 0 | ✅ done (needed the xlib-wayland fix in §7) |
-| M4 | Demo matrix (menus/popups, pixmaps, text/IME, browsers, canvas/charts, timers) | ✅ done — 86 demos: 71 paint, 15 windowless, **0 crash, 0 gap** |
+| M4 | Demo matrix (menus/popups, pixmaps, text/IME, browsers, canvas/charts, timers) | ✅ done — 86 demos: **85 paint**, 1 legitimately empty canvas, **0 crash, 0 gap** |
 | M5 | Runners committed here; shim fix pushed to xlib-wayland | ✅ done (commit `2852984`) |
+| M6 | HiDPI: render at the output scale and present with `wl_surface.set_buffer_scale` | ✅ done — full matrix re-verified at scale 2 (§5.2.2), live Plasma session at 1280×800 logical / 2560×1600 physical |
 
 The state column is kept honest as the work proceeds; §7 records every gap found on the way,
 whether it was fixed in `xlib-wayland` (and pushed) or turned out to be an upstream XForms bug.
@@ -455,9 +525,12 @@ DESIGN.md                       this document
 README.md                       quick start, status, limitations
 LICENSE                         MIT
 scripts/build-xforms.sh         configure/make/install XForms unmodified against the shim
-scripts/run-xforms-examples.sh  the three examples: paint check + scripted-click behaviour check
+scripts/run-xforms-examples.sh  the examples: paint check + scripted-click behaviour check
 scripts/run-xforms-demos.sh     the bundled demos: paint check over the wider corpus
+scripts/run-xforms-crosscheck.sh  same binaries against system libX11 (XWayland) and compare frames
+scripts/compare-frames.py       the 8px-cell ink comparator behind the cross-check
 examples/xftest{1,2,3}.c        verbatim from http://xforms-toolkit.org/examples.html
+examples/xftest4.c              local: borderless (override-redirect) form + pulldown menu
 examples/build-examples.sh      builds them with the page's own `cc ... -lforms -lX11`
 examples/inputs/*.input         the scripted pointer sequences, in compositor script format
 xlib-wayland/                   working clone (gitignored): shim changes are committed and

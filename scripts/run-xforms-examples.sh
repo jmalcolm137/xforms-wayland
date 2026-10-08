@@ -35,6 +35,10 @@
 #   XFORMS_SRC   XForms source tree  (default: $HOME/src/xforms/xforms-1.2.4)
 #   MW_RUNTIME   compositor runtime  (default: ${TMPDIR:-/tmp}/xforms-wayland-runtime)
 #   FRAMES       keep frames and logs in this directory (default: a temp dir)
+#   HC_SCALE     advertise wl_output scale N (default: 1).  N>1 keeps the same
+#                640x400 logical canvas but renders it at N x the resolution,
+#                so scripted clicks (in surface-local coordinates) must still
+#                land on the same widgets.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -49,8 +53,13 @@ FRAMES="${FRAMES:-}"
 # compositor's deadline is the shorter of the two.  Afterwards the client sees
 # the connection close and exits with Xlib's "Wayland connection closed" message,
 # which is the expected way for a still-running interactive program to end here.
-COMPOSITOR_TIMEOUT=6
-CLIENT_TIMEOUT=8
+COMPOSITOR_TIMEOUT="${COMPOSITOR_TIMEOUT:-6}"
+CLIENT_TIMEOUT="${CLIENT_TIMEOUT:-8}"
+HC_SCALE="${HC_SCALE:-1}"
+# Keep the logical canvas at 640x400 and scale the output up, exactly as a
+# HiDPI output does (see run-xforms-demos.sh for why not the other way round).
+HC_SIZE_W=$((640 * HC_SCALE))
+HC_SIZE_H=$((400 * HC_SCALE))
 
 [ -x "$BUILD/headless-compositor" ] || { echo "build the shim first ($BUILD)"; exit 1; }
 [ -e "$XFORMS_SRC/lib/.libs/libforms.so" ] || {
@@ -66,6 +75,7 @@ PROGRAMS=(
     "xftest1|xftest1.input|0|"
     "xftest2|xftest2.input|0|^Hello world$"
     "xftest3|xftest3.input|0|^Hello world$"
+    "xftest4|xftest4.input|0|^QUIT File$"
 )
 
 want=("$@")
@@ -91,7 +101,7 @@ PY
 run_client() {
     local name="$1" phase="$2" input="${3:-}"
     local sock="xfw$$_${name}_${phase}"
-    local args=(--socket "$sock" --size 640x400
+    local args=(--socket "$sock" --size "${HC_SIZE_W}x${HC_SIZE_H}" --scale "$HC_SCALE"
                 --timeout "$COMPOSITOR_TIMEOUT" --output "$WORK/$name.$phase.png")
     [ -n "$input" ] && args+=(--input "$input")
     XDG_RUNTIME_DIR="$RUNTIME" "$BUILD/headless-compositor" "${args[@]}" \

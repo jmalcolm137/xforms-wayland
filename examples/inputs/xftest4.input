@@ -1,0 +1,21 @@
+# xftest4.input — open the File menu on a borderless form, choose Quit.
+#
+# The form is 300x200.  The File touch menu is at (20,20) 80x25, so press at its
+# centre (60,32).  While the button is held the menu shell drops down as an
+# override-redirect popup; the compositor then delivers subsequent coordinates
+# to *that* surface, so the release is popup-relative.  The single "Quit" item
+# sits at the bottom of the 95x54 shell, around (47,40).
+#
+# There is deliberately no trailing "screenshot": the compositor exits the
+# instant it takes one, closing the Wayland connection while the client may still
+# be handling the selection, and the client would die of XIO rather than printing
+# its marker and exiting 0.
+
+motion 60 32
+sleep 300
+button press left
+sleep 500
+motion 47 40
+sleep 300
+button release left
+sleep 800

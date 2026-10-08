@@ -29,6 +29,9 @@
 #   XFORMS_SRC   XForms source tree  (default: $HOME/src/xforms/xforms-1.2.4)
 #   FRAMES       keep frames and logs here (default: a temp dir)
 #   DEMO_SECS    seconds per demo    (default: 4)
+#   HC_SCALE     advertise wl_output scale N to the demos (default: 1).
+#                N>1 exercises the HiDPI path: the shim renders at N x the
+#                logical resolution and captures N x larger frames.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -38,6 +41,13 @@ PREFIX="${MW_PREFIX:-$HOME/.local/motif-wayland}"
 XFORMS_SRC="${XFORMS_SRC:-$HOME/src/xforms/xforms-1.2.4}"
 RUNTIME="${MW_RUNTIME:-${TMPDIR:-/tmp}/xforms-wayland-runtime}"
 DEMO_SECS="${DEMO_SECS:-4}"
+HC_SCALE="${HC_SCALE:-1}"
+# The demos are laid out for an 800x600 logical screen.  Keep that logical size
+# and make the output HC_SCALE times larger physically, which is exactly what a
+# HiDPI output does; scaling the output *down* instead would shrink the logical
+# screen and trip the full-screen-root-cover heuristic in mw_map_window().
+HC_SIZE_W=$((800 * HC_SCALE))
+HC_SIZE_H=$((600 * HC_SCALE))
 # Run from demos/ so the demos find their .xpm/.xbm data files (XForms looks for
 # them in the current directory), with the wrapper scripts in that directory --
 # they set the library path for the build tree's own libforms.
@@ -97,7 +107,7 @@ for name in "${DEFAULT_DEMOS[@]}"; do
 
     sock="xfd$$_$name"
     XDG_RUNTIME_DIR="$RUNTIME" "$BUILD/headless-compositor" \
-        --socket "$sock" --size 800x600 \
+        --socket "$sock" --size "${HC_SIZE_W}x${HC_SIZE_H}" --scale "$HC_SCALE" \
         --timeout "$DEMO_SECS" --output "$WORK/$name.png" \
         >"$WORK/$name.ready" 2>"$WORK/$name.hc" &
     hc=$!
